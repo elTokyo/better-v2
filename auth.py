@@ -1,31 +1,32 @@
 """
-Авторизация пользователей через пароль.
-Whitelist хранится в data/users.json.
+Авторизация через GitHub Gist (модуль gist_storage).
+Ключ — user_id (TG ID пользователя).
 """
-import json
-import os
 import logging
+import threading
 from datetime import datetime
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import config
+import gist_storage
 
 logger = logging.getLogger(__name__)
 
-USERS_FILE = os.path.join(config.DATA_DIR, "users.json")
+FILE = gist_storage.FILE_USERS
+_lock = threading.RLock()
 
 
 @dataclass
 class AuthorizedUser:
-    chat_id: int
-    username: str          # @username из TG (может быть пустым)
-    first_name: str        # имя из TG
-    authorized_at: str     # когда авторизовался (ISO)
+    user_id: int
+    username: str
+    first_name: str
+    authorized_at: str
     banned: bool = False
 
     def to_dict(self) -> dict:
         return {
-            "chat_id": self.chat_id,
+            "user_id": self.user_id,
             "username": self.username,
             "first_name": self.first_name,
             "authorized_at": self.authorized_at,
@@ -34,8 +35,9 @@ class AuthorizedUser:
 
     @classmethod
     def from_dict(cls, d: dict) -> "AuthorizedUser":
+        uid = d.get("user_id") or d.get("chat_id")
         return cls(
-            chat_id=d["chat_id"],
+            user_id=int(uid),
             username=d.get("username", ""),
             first_name=d.get("first_name", ""),
             authorized_at=d.get("authorized_at", ""),
@@ -43,65 +45,60 @@ class AuthorizedUser:
         )
 
 
-def _read() -> dict:
-    try:
-        with open(USERS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-
-
-def _write(data: dict):
-    os.makedirs(config.DATA_DIR, exist_ok=True)
-    with open(USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-def is_authorized(chat_id: int) -> bool:
-    """Авторизован и не забанен."""
-    data = _read()
-    user = data.get(str(chat_id))
+def is_authorized(user_id: int) -> bool:
+    if user_id in config.ADMIN_CHAT_IDS:
+        return True
+    data = gist_storage.read(FILE)
+    user = data.get(str(user_id))
     if not user:
         return False
     return not user.get("banned", False)
 
 
-def is_admin(chat_id: int) -> bool:
-    return chat_id == config.ADMIN_CHAT_ID
+def is_admin(user_id: int) -> bool:
+    return user_id in config.ADMIN_CHAT_IDS
 
 
-def authorize(chat_id: int, username: str, first_name: str) -> AuthorizedUser:
-    data = _read()
-    user = AuthorizedUser(
-        chat_id=chat_id,
-        username=username or "",
-        first_name=first_name or "",
-        authorized_at=datetime.utcnow().isoformat(timespec="seconds"),
-    )
-    data[str(chat_id)] = user.to_dict()
-    _write(data)
-    logger.info(f"Авторизован новый пользователь: {chat_id} (@{username})")
-    return user
+def authorize(user_id: int, username: str, first_name: str) -> AuthorizedUser:
+    with _lock:
+        data = gist_storage.read(FILE)
+        existing = data.get(str(user_id))
+        authorized_at = (
+            existing.get("authorized_at") if existing
+            else datetime.utcnow().isoformat(timespec="seconds")
+        )
+        user = AuthorizedUser(
+            user_id=user_id,
+            username=username or "",
+            first_name=first_name or "",
+            authorized_at=authorized_at,
+        )
+        data[str(user_id)] = user.to_dict()
+        gist_storage.write(FILE, data)
+        logger.info(f"Авторизован: {user_id} (@{username}). Всего: {len(data)}")
+        return user
 
 
 def list_users() -> list[AuthorizedUser]:
-    data = _read()
+    data = gist_storage.read(FILE)
     return [AuthorizedUser.from_dict(u) for u in data.values()]
 
 
-def remove_user(chat_id: int) -> bool:
-    data = _read()
-    if str(chat_id) in data:
-        del data[str(chat_id)]
-        _write(data)
-        return True
-    return False
-
-
-def set_banned(chat_id: int, banned: bool) -> bool:
-    data = _read()
-    if str(chat_id) not in data:
+def remove_user(user_id: int) -> bool:
+    with _lock:
+        data = gist_storage.read(FILE)
+        if str(user_id) in data:
+            del data[str(user_id)]
+            gist_storage.write(FILE, data)
+            return True
         return False
-    data[str(chat_id)]["banned"] = banned
-    _write(data)
-    return True
+
+
+def set_banned(user_id: int, banned: bool) -> bool:
+    with _lock:
+        data = gist_storage.read(FILE)
+        if str(user_id) not in data:
+            return False
+        data[str(user_id)]["banned"] = banned
+        gist_storage.write(FILE, data)
+        return True

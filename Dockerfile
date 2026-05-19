@@ -7,7 +7,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p /app/data
-ENV DATA_DIR=/app/data
-
 CMD ["python", "bot.py"]

@@ -39,8 +39,10 @@ def main():
 
     if not config.ACCESS_PASSWORD:
         logger.warning("⚠️ ACCESS_PASSWORD не задан — бот открыт для всех!")
-    if not config.ADMIN_CHAT_ID:
-        logger.warning("⚠️ ADMIN_CHAT_ID не задан — админ-команды недоступны")
+    if not config.ADMIN_CHAT_IDS:
+        logger.warning("⚠️ ADMIN_CHAT_IDS не задан — админ-команды недоступны")
+    else:
+        logger.info(f"Админов: {len(config.ADMIN_CHAT_IDS)}")
 
     app = Application.builder().token(config.BOT_TOKEN).build()
 
